@@ -186,88 +186,59 @@ function startMonitoringBackground() {
 
   // Check if there's already a task running
   chrome.runtime.sendMessage({ type: 'GET_TASK_STATUS' }, (task) => {
-    if (task && task.status === 'running') {
+    if (task) {
       renderBackgroundProgress(task);
     }
   });
 }
 
 function renderBackgroundProgress(task) {
-  const queueList = document.getElementById("queueList");
-  const btnStop = document.getElementById("btnStopDownload");
-  if (!queueList) return;
-
+  const queueList = document.getElementById('queueList');
+  const btnStop = document.getElementById('btnStopDownload');
+  const btnResume = document.getElementById('btnResumeDownload');
+  if (!queueList || !task) return;
   const t = TRANSLATIONS[currentLang];
-
-  if (task.status === 'running' || task.status === 'stopping') {
-    btnStop.style.display = "block";
-    btnStop.textContent = task.status === 'stopping' ? t.btnStopDownloadStopping : t.btnStopDownload;
-    btnStop.disabled = task.status === 'stopping';
-
-    const btnAll = document.getElementById("btnDownloadAll");
-    if (btnAll) {
-      btnAll.textContent = task.status === 'stopping' ? t.btnDownloadAllStopping : t.btnDownloadAllAddQueue;
-      btnAll.disabled = task.status === 'stopping';
-    }
-
-    // Render Queue Items
-    if (!task.queue || task.queue.length === 0) {
-      queueList.innerHTML = `<div style="text-align:center;color:#999;font-size:11px;margin-top:20px;">${t.queueInitializing}</div>`;
-    } else {
-      queueList.innerHTML = task.queue.map((q, idx) => {
-        const pct = Math.round((q.done / Math.max(1, q.total)) * 100);
-        let statusStr = "";
-        let color = "#333";
-        if (q.status === 'running') {
-          statusStr = t.statusRunning;
-          color = "#1a73e8";
-        } else if (q.status === 'pending') {
-          statusStr = t.statusPending;
-          color = "#f4b400";
-        } else if (q.status === 'completed') {
-          statusStr = t.statusCompleted;
-          color = "#0f9d58";
-        } else if (q.status === 'cancelled') {
-          statusStr = t.statusCancelled;
-          color = "#ea4335";
-        }
-
-        return `
-          <div class="queue-item" style="display:flex;align-items:center;gap:6px;">
-            <div style="font-size:11px;font-weight:bold;color:#aaa;min-width:18px;text-align:center;">#${idx + 1}</div>
-            <div class="queue-item-info" style="flex:1;min-width:0;">
-              <div class="queue-item-title" title="${q.bookName}">${q.bookName}</div>
-              <div class="queue-item-status">
-                <span style="color:${color};font-weight:bold;">${statusStr}</span> • ${q.done}/${q.total} ${t.chaptersUnit}
-              </div>
-              <div style="height:4px;background:#e0e0e0;border-radius:2px;overflow:hidden;margin-top:4px;">
-                <div style="height:100%;width:${pct}%;background:${color};transition:width 0.3s;border-radius:2px;"></div>
-              </div>
-            </div>
-            ${(q.status === 'running' || q.status === 'pending') ? `
-              <button class="btn-cancel-book" data-url="${q.bookUrl}">X</button>
-            ` : ''}
-          </div>
-        `;
-      }).join("");
-
-      // Add cancel event listeners
-      document.querySelectorAll(".btn-cancel-book").forEach(btn => {
-        btn.addEventListener("click", () => {
-          btn.disabled = true;
-          chrome.runtime.sendMessage({ type: 'CANCEL_BOOK', bookUrl: btn.dataset.url });
-        });
-      });
-    }
-  } else if (task.status === 'completed' || task.status === 'stopped' || task.status === 'error') {
-    btnStop.style.display = "none";
-    const btnAll = document.getElementById("btnDownloadAll");
-    if (btnAll) {
-      btnAll.disabled = false;
-      btnAll.textContent = t.btnDownloadAllRetry;
-    }
-    queueList.innerHTML = `<div style="text-align:center;color:#999;font-size:11px;margin-top:20px;">${t.queueEmpty}</div>`;
+  const running = task.status === 'running' || task.status === 'stopping';
+  btnStop.style.display = running ? 'block' : 'none';
+  btnStop.disabled = task.status === 'stopping';
+  btnStop.textContent = task.status === 'stopping' ? t.btnStopDownloadStopping : t.btnStopDownload;
+  btnResume.style.display = ['error', 'stopped'].includes(task.status) ? 'block' : 'none';
+  btnResume.disabled = false;
+  btnResume.textContent = t.btnResumeDownload;
+  const btnAll = document.getElementById('btnDownloadAll');
+  if (btnAll) {
+    btnAll.disabled = task.status === 'stopping';
+    btnAll.textContent = task.status === 'stopping' ? t.btnDownloadAllStopping
+      : running ? t.btnDownloadAllAddQueue : t.btnDownloadAll;
   }
+  const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[c]);
+  const labels = { running: t.statusRunning, pending: t.statusPending,
+    exporting: t.statusExporting, completed: t.statusCompleted,
+    cancelled: t.statusCancelled, stopped: t.statusStopped, error: t.statusError };
+  queueList.innerHTML = (task.error ? `<p style="color:#d32f2f;">${escape(task.error)}</p>` : '') +
+    (task.queue || []).map((q, idx) => {
+      const pct = Math.round(q.done / Math.max(1, q.total) * 100);
+      const color = q.status === 'error' ? '#d32f2f' : q.status === 'completed' ? '#0f9d58' : '#1a73e8';
+      return `<div class="queue-item" style="display:flex;align-items:center;gap:6px;">
+        <span>#${idx + 1}</span><div class="queue-item-info" style="flex:1;min-width:0;">
+          <div class="queue-item-title">${escape(q.bookName)}</div>
+          <div class="queue-item-status" style="color:${color};">${labels[q.status] || ''} • ${q.done}/${q.total} ${t.chaptersUnit}</div>
+          <div style="height:4px;background:#e0e0e0;"><div style="height:100%;width:${pct}%;background:${color};"></div></div>
+          ${q.error ? `<pre style="white-space:pre-wrap;overflow-wrap:anywhere;color:#d32f2f;font-size:11px;">${escape(q.error)}</pre>` : ''}
+        </div>
+        ${!['completed', 'cancelled', 'exporting'].includes(q.status)
+          ? `<button class="btn-cancel-book" data-batch-id="${escape(q.id)}" aria-label="${escape(t.statusCancelled)}">X</button>` : ''}
+      </div>`;
+    }).join('');
+  if (!task.queue?.length && !task.error) queueList.textContent = t.queueEmpty;
+  queueList.querySelectorAll('.btn-cancel-book').forEach(btn => {
+    btn.addEventListener('click', () => {
+      btn.disabled = true;
+      chrome.runtime.sendMessage({ type: 'CANCEL_BOOK', batchId: btn.dataset.batchId });
+    });
+  });
 }
 
 // Re-implement renderProgressBar locally since utils.js is not an ESM (or we can import it if we make it one)
@@ -328,7 +299,7 @@ function renderPreview(d, source, url, tabId, resultDiv) {
       }
 
       await chrome.storage.local.set({ lastState: { url, preview: d, chapters, timestamp: Date.now() } });
-      await renderChapters(source, chapters, d.bookName, chapterDiv, tabId, url);
+      await renderChapters(source, chapters, d.bookName, chapterDiv, tabId, url, d.authorName);
     } catch (err) {
       let errMsg = err.message;
       if (errMsg.includes("Timeout: danh sách chapter chưa render")) {
@@ -339,7 +310,7 @@ function renderPreview(d, source, url, tabId, resultDiv) {
   });
 }
 
-async function renderChapters(source, chapters, bookName, chapterDiv, tabId, url) {
+async function renderChapters(source, chapters, bookName, chapterDiv, tabId, url, authorName) {
   const t = TRANSLATIONS[currentLang];
   const storage = await chrome.storage.local.get(["cachedFolder", "cachedFormat", "cachedConflictAction", "cachedSelectedChapters"]);
   const cacheObj = storage.cachedSelectedChapters;
@@ -449,7 +420,7 @@ async function renderChapters(source, chapters, bookName, chapterDiv, tabId, url
     }
 
     const storage = await chrome.storage.local.get(["cachedFolder", "cachedFormat", "cachedConflictAction", "cachedFileNameFormat"]);
-    const format = storage.cachedFormat || "docx";
+    const format = storage.cachedFormat || "txt";
     const folderName = storage.cachedFolder || "Excerpo";
     const conflictAction = storage.cachedConflictAction || "uniquify";
     const nameFormat = storage.cachedFileNameFormat || "#{index}_{title}";
@@ -461,6 +432,7 @@ async function renderChapters(source, chapters, bookName, chapterDiv, tabId, url
     const enrichedChapters = filteredChapters.map(c => ({
       ...c,
       bookName,
+      authorName,
       bookUrl: url,
       folderName,
       format,
@@ -472,9 +444,9 @@ async function renderChapters(source, chapters, bookName, chapterDiv, tabId, url
       type: 'ADD_TO_BATCH_DOWNLOAD',
       data: { chapters: enrichedChapters, openAd: true }
     }, (response) => {
-      if (!response) {
+      if (!response || response.status === 'error') {
         btnAll.disabled = false;
-        btnAll.textContent = t.errorBgConnection;
+        btnAll.textContent = response?.error || t.errorBgConnection;
       } else {
         btnAll.textContent = t.successSentBg;
 
@@ -646,7 +618,7 @@ async function restoreState() {
   renderPreview(preview, source, url, null, dom.result);
 
   if (chapters && chapters.length) {
-    await renderChapters(source, chapters, preview.bookName, document.getElementById("chapterResult"), null, url);
+    await renderChapters(source, chapters, preview.bookName, document.getElementById("chapterResult"), null, url, preview.authorName);
   }
 }
 
@@ -772,7 +744,7 @@ function setupEventListeners() {
   // Load initial settings
   chrome.storage.local.get(["cachedFolder", "cachedFormat", "cachedConflictAction", "chapterDelay", "cachedFileNameFormat"], (s) => {
     document.getElementById("settingFolder").value = s.cachedFolder || "Excerpo";
-    document.getElementById("settingFormat").value = s.cachedFormat || "docx";
+    document.getElementById("settingFormat").value = s.cachedFormat || "txt";
     document.getElementById("settingConflict").value = s.cachedConflictAction || "uniquify";
     document.getElementById("settingDelay").value = (s.chapterDelay !== undefined) ? s.chapterDelay : 60;
     document.getElementById("settingFileNameFormat").value = s.cachedFileNameFormat || "#{index}_{title}";
@@ -835,6 +807,14 @@ function setupEventListeners() {
   tabs.forEach(tab => {
     tab.addEventListener("click", () => {
       window.switchTab(tab.dataset.tab);
+    });
+  });
+
+  document.getElementById('btnResumeDownload').addEventListener('click', event => {
+    event.target.disabled = true;
+    chrome.runtime.sendMessage({ type: 'RETRY_BATCH_DOWNLOAD' }, response => {
+      if (response?.error) alert(response.error);
+      chrome.runtime.sendMessage({ type: 'GET_TASK_STATUS' }, renderBackgroundProgress);
     });
   });
 

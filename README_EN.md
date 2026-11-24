@@ -3,7 +3,7 @@
 # <img src="icons/icon48.png" height="36" align="center" alt="Excerpo Icon" /> Excerpo
 **Automated multi-platform text/novel extractor and downloader tool**
 
-[![Version](https://img.shields.io/badge/version-1.27.0-blue.svg)](#)
+[![Version](https://img.shields.io/badge/version-1.28.0-blue.svg)](#)
 [![Browser](https://img.shields.io/badge/browser-Chrome%20%7C%20Edge%20%7C%20Cốc%20Cốc%20%7C%20Brave%20%7C%20Opera%20%7C%20Vivaldi-brightgreen.svg)](#)
 [![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-blue.svg)](#)
 [![License](https://img.shields.io/badge/license-Personal%20Use-red.svg)](#)
@@ -13,6 +13,14 @@
 ---
 
 </div>
+
+## 📚 Fork: one file per book
+
+Select **TXT** or **EPUB** in Settings. Each download selection produces one file after every selected chapter succeeds, in chapter-list order. EPUB includes a chapter table of contents; DOCX still saves separate chapters. TXT is the new default; existing installations retain their saved format.
+
+Failed or stopped selections remain in Queue. Use **Resume / retry failed chapters** to reuse saved text and fetch only missing chapters. Each selection is separate, including multiple selections of the same book. Cancelled selections never produce a partial book. For TXT/EPUB filenames, `{title}` is the book title and `{index}` is the first–last selected chapter number.
+
+Reload the extension after updating. Reselect unfinished jobs created by the older version; do not clear extension data if you want to resume a new job. Run the dependency-free checks with Node.js: `node --test tests/book-download.test.cjs`.
 
 ## 🌟 Introduction
 **Excerpo** (Latin for "extract", "gather") is a powerful browser extension specifically designed to automatically collect text and novel contents from leading reading websites.

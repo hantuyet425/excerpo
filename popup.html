@@ -655,6 +655,9 @@
         data-i18n="btnStopDownload">
         ⏹ Dừng tải ngầm toàn bộ
       </button>
+      <button id="btnResumeDownload" type="button"
+        style="width:100%;padding:8px;background:#1a73e8;color:white;border:none;border-radius:4px;cursor:pointer;display:none;"
+        data-i18n="btnResumeDownload">Tiếp tục / thử lại chương lỗi</button>
     </div> <!-- Close of panel-queue -->
 
     <!-- Tab Panel: Settings -->
@@ -687,9 +690,9 @@
         <div style="flex:1;">
           <label data-i18n="settingFormatLabel">Định dạng:</label>
           <select id="settingFormat">
-            <option value="docx">.docx</option>
-            <option value="txt">.txt</option>
-            <option value="epub">.epub</option>
+            <option value="txt" data-i18n="formatTxt">.txt — một tệp cho truyện</option>
+            <option value="epub" data-i18n="formatEpub">.epub — một cuốn có mục lục</option>
+            <option value="docx" data-i18n="formatDocx">.docx — từng chương</option>
           </select>
         </div>
         <div style="flex:1;">
@@ -704,8 +707,7 @@
       <div class="form-group">
         <label data-i18n="settingFileNameFormatLabel">Tên file tải về:</label>
         <input type="text" id="settingFileNameFormat" value="#{index}_{title}" placeholder="VD: chuong-{index} {title}">
-        <p style="font-size:10px;color:#888;margin-top:4px;" data-i18n="settingFileNameFormatDesc">{index}: STT,
-          {title}: Tiêu đề chương</p>
+        <p style="font-size:10px;color:#888;margin-top:4px;" data-i18n="settingFileNameFormatDesc">TXT/EPUB: {index} là dải chương, {title} là tên truyện. DOCX: STT và tiêu đề chương.</p>
       </div>
 
       <div class="form-group">

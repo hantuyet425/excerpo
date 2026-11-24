@@ -3,7 +3,7 @@
 # <img src="icons/icon48.png" height="36" align="center" alt="Excerpo Icon" /> Excerpo
 **Công cụ trích xuất và tải truyện/text tự động từ đa nền tảng**
 
-[![Version](https://img.shields.io/badge/version-1.27.0-blue.svg)](#)
+[![Version](https://img.shields.io/badge/version-1.28.0-blue.svg)](#)
 [![Browser](https://img.shields.io/badge/browser-Chrome%20%7C%20Edge%20%7C%20Cốc%20Cốc%20%7C%20Brave%20%7C%20Opera%20%7C%20Vivaldi-brightgreen.svg)](#)
 [![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-blue.svg)](#)
 [![License](https://img.shields.io/badge/license-Personal%20Use-red.svg)](#)
@@ -13,6 +13,16 @@
 ---
 
 </div>
+
+## 📚 Bản fork: tải một tệp cho mỗi truyện
+
+- Chọn **TXT** hoặc **EPUB** trong Cài đặt. Mỗi lần bấm tải sẽ tạo **một tệp chứa toàn bộ các chương đã chọn**, đúng thứ tự mục lục. EPUB có mục lục cho từng chương; DOCX vẫn lưu từng chương riêng.
+- Chỉ xuất tệp chung sau khi tất cả chương đã chọn tải thành công. Nếu có lỗi, mở **Hàng đợi → Tiếp tục / thử lại chương lỗi**. Chương đã lấy được lưu tạm trong tiện ích để tiếp tục mà không tải lại.
+- Có thể dừng rồi tiếp tục. Mỗi lượt chọn được quản lý riêng, kể cả khi xếp nhiều lượt của cùng một truyện. Hủy một lượt sẽ không xuất tệp thiếu chương.
+- Tên tệp TXT/EPUB: `{title}` là tên truyện, `{index}` là số chương đầu–cuối của phần đã chọn. Ví dụ: `#1-100_Tên truyện.epub`. Mặc định mới là TXT; nếu từng dùng tiện ích, hãy chọn lại định dạng trong Cài đặt.
+- Sau khi cập nhật bản cũ, tải lại tiện ích tại `chrome://extensions/` và chọn lại các lượt tải cũ chưa hoàn thành. Không xóa dữ liệu tiện ích khi đang cần tiếp tục một lượt tải mới.
+
+Kiểm tra logic tải và đóng gói (cần Node.js, không cần cài thêm thư viện): `node --test tests/book-download.test.cjs`.
 
 ## 🌟 Giới thiệu
 **Excerpo** (tiếng Latin: "Trích xuất", "Gặt hái") là một tiện ích mở rộng (Browser Extension) mạnh mẽ, được thiết kế chuyên biệt để tự động thu thập văn bản, nội dung truyện chữ từ các trang web đọc truyện hàng đầu. 

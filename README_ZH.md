@@ -3,7 +3,7 @@
 # <img src="icons/icon48.png" height="36" align="center" alt="Excerpo Icon" /> Excerpo
 **跨平台小说/文本自动提取与下载工具**
 
-[![Version](https://img.shields.io/badge/version-1.27.0-blue.svg)](#)
+[![Version](https://img.shields.io/badge/version-1.28.0-blue.svg)](#)
 [![Browser](https://img.shields.io/badge/browser-Chrome%20%7C%20Edge%20%7C%20Cốc%20Cốc%20%7C%20Brave%20%7C%20Opera%20%7C%20Vivaldi-brightgreen.svg)](#)
 [![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-blue.svg)](#)
 [![License](https://img.shields.io/badge/license-Personal%20Use-red.svg)](#)
@@ -13,6 +13,14 @@
 ---
 
 </div>
+
+## 📚 此分支：每本书导出一个文件
+
+在设置中选择 **TXT** 或 **EPUB**。每次选择的章节全部下载成功后，按目录顺序导出一个文件；EPUB 包含章节目录，DOCX 仍按章保存。新安装默认使用 TXT，已有安装保留原格式设置。
+
+失败或已停止的任务会保留在队列中，点击 **继续 / 重试失败章节**，只补取缺失章节并复用已保存的内容。同一本书的不同选择独立处理；取消任务不会导出残缺书籍。TXT/EPUB 文件名中的 `{title}` 为书名，`{index}` 为所选首末章节序号。
+
+更新后请重新加载扩展，并重新选择旧版本中尚未完成的任务。需要续传新任务时，请勿清除扩展数据。使用 Node.js 运行无需额外依赖的检查：`node --test tests/book-download.test.cjs`。
 
 ## 🌟 简介
 **Excerpo**（拉丁语：“提取”，“收获”）是一款功能强大的浏览器扩展（Browser Extension），专门设计用于从各大主流阅读网站上自动收集和提取文本及小说内容。
