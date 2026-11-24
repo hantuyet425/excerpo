@@ -3,6 +3,7 @@
 importScripts(
   'docx.js',
   'jszip.js',
+  'scripts/book-export.js',
   // 🇨🇳 Trung Quốc (Giản thể)
   'sources/17k.js',
   'sources/22biqu.js',
@@ -167,145 +168,157 @@ const adsLinks = [
 
 let activeBatchTask = null;
 let storageInitResolve;
-let storageInitPromise = new Promise(r => storageInitResolve = r);
+const storageInitPromise = new Promise(r => storageInitResolve = r);
+let storageWrite = Promise.resolve();
+
+function getTaskProgress() {
+  if (!activeBatchTask) return null;
+  // Keep chapter text in storage, not in every popup progress message.
+  const { results, ...progress } = activeBatchTask;
+  return progress;
+}
+
+function notifyTaskProgress() {
+  chrome.runtime.sendMessage({ type: 'TASK_PROGRESS', data: getTaskProgress() }).catch(() => {});
+}
+
+async function saveTaskToStorage(task = activeBatchTask) {
+  if (!task) return;
+  const snapshot = structuredClone({ ...task, activeChapters: [] });
+  // Serialize snapshots so an older worker cannot overwrite newer results.
+  storageWrite = storageWrite.catch(() => {}).then(() => chrome.storage.local.set({ activeBatchTask: snapshot }));
+  try {
+    await storageWrite;
+  } catch (err) {
+    task.status = 'error';
+    task.error = `Không lưu được tiến độ: ${err.message}`;
+    updateExtensionBadge(task);
+    notifyTaskProgress();
+    throw err;
+  }
+  updateExtensionBadge(task);
+}
+
+function startBatchDownload() {
+  const task = activeBatchTask;
+  runBatchDownload().catch(async err => {
+    console.error('[Batch]', err);
+    task.status = 'error';
+    task.error = err.message;
+    notifyTaskProgress();
+    await saveTaskToStorage(task).catch(e => console.error('[Storage]', e));
+  });
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'KEEPALIVE_PING') {
     sendResponse({ alive: true });
+    return;
   }
+  if (!['ADD_TO_BATCH_DOWNLOAD', 'RETRY_BATCH_DOWNLOAD', 'CANCEL_BOOK', 'STOP_BATCH_DOWNLOAD', 'GET_TASK_STATUS'].includes(message.type)) return;
 
-  if (message.type === 'ADD_TO_BATCH_DOWNLOAD') {
-    const { chapters } = message.data;
-
-    let isNewTask = false;
-    if (!activeBatchTask || (activeBatchTask.status !== 'running' && activeBatchTask.status !== 'stopping')) {
-      activeBatchTask = {
-        chapters: [],
-        queue: [],
-        nextIdx: 0,
-        doneCount: 0,
-        activeWorkers: 0,
-        workerCount: WORKER_COUNT,
-        activeChapters: [],
-        results: [],
-        status: 'running',
-        startTime: Date.now()
-      };
-      isNewTask = true;
+  storageInitPromise.then(async () => {
+    if (message.type === 'GET_TASK_STATUS') {
+      sendResponse(getTaskProgress());
+      return;
     }
 
-    activeBatchTask.chapters.push(...chapters);
-
-    // Update queue logic
-    const bookGroups = {};
-    chapters.forEach(c => {
-      if (!bookGroups[c.bookUrl]) {
-        bookGroups[c.bookUrl] = { bookUrl: c.bookUrl, bookName: c.bookName, count: 0 };
+    if (message.type === 'ADD_TO_BATCH_DOWNLOAD') {
+      const chapters = message.data?.chapters;
+      if (!Array.isArray(chapters) || !chapters.length || chapters.some(c =>
+        !c.chapter_url || !getSource(c.bookUrl) || !['txt', 'epub', 'docx'].includes(c.format || 'txt'))) {
+        throw new Error('Danh sách chương không hợp lệ.');
       }
-      bookGroups[c.bookUrl].count++;
-    });
-
-    Object.values(bookGroups).forEach(bg => {
-      const existingBook = activeBatchTask.queue.find(q => q.bookUrl === bg.bookUrl);
-      if (existingBook && existingBook.status !== 'cancelled') {
-        existingBook.total += bg.count;
-        if (existingBook.status === 'completed') existingBook.status = 'pending';
-      } else {
-        activeBatchTask.queue.push({
-          bookUrl: bg.bookUrl,
-          bookName: bg.bookName,
-          total: bg.count,
-          done: 0,
-          status: 'pending'
-        });
+      if (activeBatchTask?.status === 'stopping') throw new Error('Đang dừng công việc.');
+      if (['error', 'stopped'].includes(activeBatchTask?.status) &&
+          activeBatchTask.queue.some(q => !['completed', 'cancelled'].includes(q.status))) {
+        throw new Error('Hãy tiếp tục hoặc hủy lượt tải chưa xong trong Hàng đợi trước khi bắt đầu lượt mới.');
       }
-    });
+      const isNewTask = activeBatchTask?.status !== 'running';
+      if (isNewTask) {
+        activeBatchTask = {
+          version: 2, chapters: [], queue: [], nextIdx: 0, doneCount: 0,
+          activeWorkers: 0, workerCount: WORKER_COUNT, activeChapters: [],
+          results: [], errors: [], status: 'running', startTime: Date.now()
+        };
+      }
+      const task = activeBatchTask;
+      const groups = new Map();
+      // Each click is a separate selection, even for the same book.
+      for (const chapter of chapters) {
+        let book = groups.get(chapter.bookUrl);
+        if (!book) {
+          book = { id: crypto.randomUUID(), bookUrl: chapter.bookUrl, bookName: chapter.bookName,
+            authorName: chapter.authorName, total: 0, done: 0, status: 'pending' };
+          groups.set(chapter.bookUrl, book);
+          task.queue.push(book);
+        }
+        task.chapters.push({ ...chapter, batchId: book.id });
+        book.total++;
+      }
+      await saveTaskToStorage(task);
+      notifyTaskProgress();
+      sendResponse({ status: 'started' });
+      if (isNewTask) startBatchDownload();
 
-    if (isNewTask) {
-      runBatchDownload();
+      if (message.data.openAd) {
+        setTimeout(() => {
+          const randomAd = adsLinks[Math.floor(Math.random() * adsLinks.length)];
+          chrome.tabs.create({ url: randomAd, active: true }, tab => {
+            if (tab?.id) setTimeout(() => chrome.tabs.remove(tab.id).catch(() => {}), 60000);
+          });
+        }, 1000);
+      }
+      return;
     }
 
-    saveTaskToStorage();
-    chrome.runtime.sendMessage({ type: 'TASK_PROGRESS', data: activeBatchTask }).catch(() => { });
-    sendResponse({ status: 'started' });
-
-    // Open ad tab after responding (popup may already be closed by now)
-    if (message.data.openAd) {
-      setTimeout(() => {
-        const randomAd = adsLinks[Math.floor(Math.random() * adsLinks.length)];
-        chrome.tabs.create({ url: randomAd, active: true }, (tab) => {
-          if (tab && tab.id) {
-            setTimeout(() => {
-              chrome.tabs.remove(tab.id).catch(() => { });
-            }, 60000);
-          }
-        });
-      }, 1000);
-    }
-  }
-
-  if (message.type === 'CANCEL_BOOK') {
-    const { bookUrl } = message;
-    if (activeBatchTask && activeBatchTask.status === 'running') {
-      // Remove all un-processed chapters of this book
-      // We only filter from nextIdx onwards so we don't mess up current loop index
-      const newChapters = [];
-      for (let i = 0; i < activeBatchTask.chapters.length; i++) {
-        if (i < activeBatchTask.nextIdx || activeBatchTask.chapters[i].bookUrl !== bookUrl) {
-          newChapters.push(activeBatchTask.chapters[i]);
+    if (message.type === 'RETRY_BATCH_DOWNLOAD') {
+      if (!activeBatchTask || !['error', 'stopped'].includes(activeBatchTask.status)) {
+        sendResponse({ status: 'ignored' });
+        return;
+      }
+      activeBatchTask.status = 'running';
+      activeBatchTask.nextIdx = 0;
+      activeBatchTask.errors = [];
+      delete activeBatchTask.error;
+      for (const book of activeBatchTask.queue) {
+        if (!['completed', 'cancelled'].includes(book.status)) {
+          book.status = 'pending';
+          delete book.error;
         }
       }
-      activeBatchTask.chapters = newChapters;
+      await saveTaskToStorage();
+      sendResponse({ status: 'started' });
+      notifyTaskProgress();
+      startBatchDownload();
+      return;
+    }
 
-      const q = activeBatchTask.queue.find(q => q.bookUrl === bookUrl);
-      if (q) {
-        q.status = 'cancelled';
-        setTimeout(() => {
-          if (activeBatchTask && activeBatchTask.queue) {
-            activeBatchTask.queue = activeBatchTask.queue.filter(item => item.bookUrl !== bookUrl);
-            saveTaskToStorage();
-            chrome.runtime.sendMessage({ type: 'TASK_PROGRESS', data: activeBatchTask }).catch(() => { });
-          }
-        }, 3000);
+    if (message.type === 'CANCEL_BOOK') {
+      const book = activeBatchTask?.queue.find(q => q.id === message.batchId);
+      if (book && !['completed', 'exporting'].includes(book.status)) {
+        // Keep indices stable for in-flight workers and persisted results.
+        book.status = 'cancelled';
+        if (activeBatchTask.queue.every(q => ['completed', 'cancelled'].includes(q.status)) &&
+            ['error', 'stopped'].includes(activeBatchTask.status)) activeBatchTask.status = 'completed';
+        await saveTaskToStorage();
+        notifyTaskProgress();
       }
-      saveTaskToStorage();
-      chrome.runtime.sendMessage({ type: 'TASK_PROGRESS', data: activeBatchTask }).catch(() => { });
+      sendResponse({ status: 'cancelled' });
+      return;
     }
-    sendResponse({ status: 'cancelled' });
-  }
 
-  if (message.type === 'STOP_BATCH_DOWNLOAD') {
-    if (activeBatchTask && activeBatchTask.status === 'running') {
-      activeBatchTask.status = 'stopping';
-      saveTaskToStorage();
-      chrome.runtime.sendMessage({ type: 'TASK_PROGRESS', data: activeBatchTask }).catch(() => { });
-      sendResponse({ status: 'stopping' });
-    } else {
-      sendResponse({ status: 'ignored' });
+    if (message.type === 'STOP_BATCH_DOWNLOAD') {
+      if (activeBatchTask?.status === 'running') {
+        activeBatchTask.status = 'stopping';
+        await saveTaskToStorage();
+        notifyTaskProgress();
+        sendResponse({ status: 'stopping' });
+      } else sendResponse({ status: 'ignored' });
     }
-  }
-
-  if (message.type === 'GET_TASK_STATUS') {
-    storageInitPromise.then(() => {
-      sendResponse(activeBatchTask);
-    });
-    return true; // Keep message channel open for async response
-  }
-
+  }).catch(err => sendResponse({ status: 'error', error: err.message }));
   return true;
 });
-
-// ─── Persistence ─────────────────────────────────────────
-async function saveTaskToStorage() {
-  if (activeBatchTask) {
-    // Không lưu activeChapters vào storage (chỉ cần trong memory)
-    const taskToSave = { ...activeBatchTask, activeChapters: [] };
-    await chrome.storage.local.set({ activeBatchTask: taskToSave });
-    updateExtensionBadge(activeBatchTask);
-  }
-}
-
-
 
 function updateExtensionBadge(task) {
   if (!chrome.action) return;
@@ -326,229 +339,182 @@ function updateExtensionBadge(task) {
 }
 
 // ─── The Engine (Parallel Workers) ───────────────────────
-async function runBatchDownload() {
-  if (!activeBatchTask || activeBatchTask.status !== 'running') return;
+function isContentError(result) {
+  return !result || typeof result.content !== 'string' || result.__rateLimited ||
+    result.content.length < 100 || /NỘI DUNG CHƯA TẢI ĐƯỢC|Hệ thống không tìm thấy nội dung|Lỗi tải nội dung|Lỗi:|LỖI[: ]|COOLDOWN_DETECTED_/.test(result.content);
+}
 
-  const { chapters } = activeBatchTask;
+async function downloadBlob(blob, filename, conflictAction, book) {
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error('Không đọc được tệp xuất.'));
+    reader.onabort = () => reject(new Error('Đã hủy đọc tệp xuất.'));
+    reader.readAsDataURL(blob);
+  });
+  const id = await chrome.downloads.download({ url: dataUrl, filename, conflictAction, saveAs: false });
+  if (book) {
+    book.downloadId = id;
+    await saveTaskToStorage();
+  }
+  await waitForDownload(id);
+}
+
+function waitForDownload(id) {
+  return new Promise((resolve, reject) => {
+    const finish = item => {
+      if (item?.state === 'complete' || item?.state === 'interrupted') {
+        chrome.downloads.onChanged.removeListener(onChanged);
+        if (item.state === 'complete') resolve();
+        else reject(new Error(item.error || 'Tải tệp bị gián đoạn.'));
+      }
+    };
+    const onChanged = delta => {
+      if (delta.id === id && delta.state) finish({ state: delta.state.current, error: delta.error?.current });
+    };
+    chrome.downloads.onChanged.addListener(onChanged);
+    chrome.downloads.search({ id }).then(items => finish(items[0] || {
+      state: 'interrupted', error: 'Không tìm thấy tệp tải xuống.'
+    })).catch(err => {
+      chrome.downloads.onChanged.removeListener(onChanged);
+      reject(err);
+    });
+  });
+}
+
+function outputFilename(chapter, title, index, format) {
+  const safe = value => String(value).replace(/[\\/:*?"<>|]/g, '_').replace(/[. ]+$/, '') || 'Book';
+  const folder = (chapter.folderName || 'Excerpo').split(/[\\/]/)
+    .filter(part => part && part !== '.' && part !== '..').map(safe).join('/') || 'Excerpo';
+  const name = (chapter.nameFormat || '#{index}_{title}')
+    .replace(/\{index\}/g, index).replace(/\{title\}/g, title);
+  return `${folder}/${safe(chapter.bookName || 'Book')}/${safe(name)}.${format}`;
+}
+
+async function exportCompletedBook(task, book) {
+  if (task.status !== 'running' || ['completed', 'cancelled', 'exporting', 'error'].includes(book.status)) return;
+  const indices = task.chapters.map((c, i) => c.batchId === book.id ? i : -1).filter(i => i >= 0);
+  if (!indices.every(i => task.results[i])) return;
+  book.status = 'exporting';
+  await saveTaskToStorage(task);
+  notifyTaskProgress();
+  try {
+    const first = task.chapters[indices[0]];
+    const format = first.format || 'txt';
+    if (book.downloadId !== undefined) {
+      await waitForDownload(book.downloadId);
+    } else if (format !== 'docx') {
+      const chapters = indices.map(i => task.results[i]);
+      const firstNumber = first.chapter_number || indices[0] + 1;
+      const lastNumber = task.chapters[indices[indices.length - 1]].chapter_number || indices[indices.length - 1] + 1;
+      const range = firstNumber === lastNumber ? String(firstNumber) : `${firstNumber}-${lastNumber}`;
+      const blob = format === 'txt'
+        ? new Blob([buildBookText(chapters)], { type: 'text/plain;charset=utf-8' })
+        : new Blob([await buildEpubBuffer(book, chapters)], { type: 'application/epub+zip' });
+      await downloadBlob(blob, outputFilename(first, book.bookName || 'Book', range, format), first.conflictAction || 'uniquify', book);
+    }
+    book.status = 'completed';
+    delete book.error;
+  } catch (err) {
+    book.status = 'error';
+    book.error = err.message;
+    delete book.downloadId;
+  }
+  await saveTaskToStorage(task);
+  notifyTaskProgress();
+}
+
+async function runBatchDownload() {
+  const task = activeBatchTask;
+  if (!task || task.status !== 'running') return;
 
   async function worker(workerId) {
-    while (true) {
-      // ✅ CHỈ check stopping/dừng ở đây — trước khi nhận chương mới
-      if (activeBatchTask.status !== 'running') break;
-
-      const i = activeBatchTask.nextIdx;
-      if (i >= chapters.length) break;
-      activeBatchTask.nextIdx = i + 1;
-
-      const c = activeBatchTask.chapters[i];
-      if (!c) {
-        // Just in case it was filtered out
-        continue;
-      }
-
-      const q = activeBatchTask.queue.find(q => q.bookUrl === c.bookUrl);
-      if (q && q.status === 'pending') {
-        q.status = 'running';
-        chrome.runtime.sendMessage({ type: 'TASK_PROGRESS', data: activeBatchTask }).catch(() => { });
-      }
-
+    while (task.status === 'running') {
+      const i = task.nextIdx;
+      if (i >= task.chapters.length) break;
+      task.nextIdx = i + 1;
+      const c = task.chapters[i];
+      const book = task.queue.find(q => q.id === c.batchId);
+      if (!book || ['completed', 'cancelled'].includes(book.status) || task.results[i]) continue;
+      book.status = 'running';
       const chapterSource = getSource(c.bookUrl);
-      if (!chapterSource) {
-        console.error(`[Worker ${workerId}] Nguồn không hợp lệ cho ${c.bookUrl}`);
-        activeBatchTask.activeChapters[workerId] = null;
-        saveTaskToStorage();
-        continue;
-      }
-
-      const chapterDisplayTitle = `${c.bookName} - ${c.chapter_title}`;
-      activeBatchTask.activeChapters[workerId] = chapterDisplayTitle;
-      saveTaskToStorage();
-      chrome.runtime.sendMessage({ type: 'TASK_PROGRESS', data: activeBatchTask }).catch(() => { });
-
-      console.log(`[Worker ${workerId}] Bắt đầu tải chương: ${chapterDisplayTitle} (${c.chapter_url})`);
-
+      const displayTitle = `${c.bookName} - ${c.chapter_title}`;
+      task.activeChapters[workerId] = displayTitle;
+      notifyTaskProgress();
       try {
+        if (!chapterSource) throw new Error('Nguồn không hợp lệ.');
         let result;
-        let retryCount = 0;
-        const MAX_RETRY = 5;
-
-        while (retryCount < MAX_RETRY) {
-          // ❌ KHÔNG check status ở đây — phải hoàn thành chương đang dở
-
-          result = await fetchChapterContentInBackground(chapterSource, c, workerId);
-
-          if (result && result.__rateLimited) {
-            const waitSecs = 60;
-            retryCount++;
-            console.warn(`[Worker ${workerId}] Rate-limited "${c.chapter_title}", chờ ${waitSecs}s... (${retryCount}/${MAX_RETRY})`);
-
-            activeBatchTask.activeChapters[workerId] = `⏸ Rate-limit, chờ ${waitSecs}s (${retryCount}/${MAX_RETRY}): ${c.chapter_title}`;
-            activeBatchTask.rateLimitRetry = {
-              chapterIdx: i,
-              retryCount,
-              until: Date.now() + waitSecs * 1000
-            };
-            saveTaskToStorage();
-            chrome.runtime.sendMessage({ type: 'TASK_PROGRESS', data: activeBatchTask }).catch(() => { });
-
-            await keepAliveWait(waitSecs * 1000);
-
-            activeBatchTask.rateLimitRetry = null;
-            activeBatchTask.activeChapters[workerId] = chapterDisplayTitle;
-            chrome.runtime.sendMessage({ type: 'TASK_PROGRESS', data: activeBatchTask }).catch(() => { });
-            continue;
+        let lastError;
+        for (let attempt = 1; attempt <= 5; attempt++) {
+          try {
+            result = await fetchChapterContentInBackground(chapterSource, c, workerId);
+            if (!isContentError(result)) break;
+            lastError = new Error(result?.__rateLimited ? 'Rate limit' : 'Không lấy được đầy đủ nội dung.');
+          } catch (err) {
+            result = null;
+            lastError = err;
           }
-
-          if (result && result.content && result.content.startsWith("COOLDOWN_DETECTED_")) {
-            const waitSecs = parseInt(result.content.replace("COOLDOWN_DETECTED_", "")) || 180;
-            activeBatchTask.activeChapters[workerId] = `⏳ Chờ anti-spam web (${waitSecs}s)`;
-            chrome.runtime.sendMessage({ type: 'TASK_PROGRESS', data: activeBatchTask }).catch(() => { });
-
-            await keepAliveWait((waitSecs + 2) * 1000);
-
-            activeBatchTask.activeChapters[workerId] = chapterDisplayTitle;
-            chrome.runtime.sendMessage({ type: 'TASK_PROGRESS', data: activeBatchTask }).catch(() => { });
-            retryCount++;
-            continue;
-          }
-
-          const isContentError = !result || !result.content ||
-            result.content.includes("NỘI DUNG CHƯA TẢI ĐƯỢC") ||
-            result.content.includes("Hệ thống không tìm thấy nội dung") ||
-            result.content.includes("Lỗi tải nội dung") ||
-            result.content.includes("Lỗi:") ||
-            result.content.length < 100;
-
-          if (isContentError) {
-            retryCount++;
-            if (retryCount < MAX_RETRY) {
-              console.warn(`[Worker ${workerId}] Lỗi nội dung "${c.chapter_title}", thử lại (${retryCount}/${MAX_RETRY})`);
-
-              activeBatchTask.activeChapters[workerId] = `⏳ Lỗi nội dung, thử lại (${retryCount}/${MAX_RETRY}): ${c.chapter_title}`;
-              saveTaskToStorage();
-              chrome.runtime.sendMessage({ type: 'TASK_PROGRESS', data: activeBatchTask }).catch(() => { });
-
-              await keepAliveWait(5000);
-
-              activeBatchTask.activeChapters[workerId] = chapterDisplayTitle;
-              chrome.runtime.sendMessage({ type: 'TASK_PROGRESS', data: activeBatchTask }).catch(() => { });
-              continue;
+          if (attempt < 5 && book.status !== 'cancelled') {
+            let wait = result?.__rateLimited ? 60 : 5;
+            if (result?.content?.startsWith('COOLDOWN_DETECTED_')) {
+              wait = (parseInt(result.content.replace('COOLDOWN_DETECTED_', '')) || 180) + 2;
             }
-          } else {
-            break; // Thành công, thoát vòng lặp
+            task.activeChapters[workerId] = `⏳ ${attempt}/5: ${displayTitle}`;
+            await keepAliveWait(wait * 1000);
           }
+          if (book.status === 'cancelled') break;
         }
-
-        // ❌ ĐÃ XÓA: if (activeBatchTask.status !== 'running') break;
-
-        // Hết retry vẫn rate-limited → ghi lỗi, tiếp tục
-        if (result && result.__rateLimited) {
-          result = {
-            chapter_title: c.chapter_title,
-            chapter_url: c.chapter_url,
-            content: `LỖI: Bị rate-limit sau ${MAX_RETRY} lần thử - ${c.chapter_url}`
-          };
+        if (isContentError(result)) throw lastError;
+        if (book.status !== 'cancelled') {
+          const chapter = { chapter_title: result.chapter_title || c.chapter_title, content: result.content };
+          if (c.format === 'docx') {
+            const blob = new Blob([await buildDocxBuffer(chapter)], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+            await downloadBlob(blob, outputFilename(c, c.chapter_title, String(c.chapter_number || i + 1), 'docx'), c.conflictAction || 'uniquify');
+          }
+          task.results[i] = c.format === 'docx' ? true : chapter;
+          delete task.errors[i];
+          task.doneCount++;
+          book.done++;
         }
-
-        const isContentError = !result || !result.content ||
-          result.content.includes("NỘI DUNG CHƯA TẢI ĐƯỢC") ||
-          result.content.includes("Hệ thống không tìm thấy nội dung") ||
-          result.content.includes("Lỗi tải nội dung") ||
-          result.content.includes("Lỗi:") ||
-          result.content.length < 100;
-
-        const prefix = isContentError ? "ERROR_" : "";
-        const format = c.format || 'docx';
-        const stt = c.chapter_number || i + 1;
-        const nameFmt = c.nameFormat || "#{index}_{title}";
-        const safeTitle = c.chapter_title.replace(/[\\/:*?"<>|]/g, "_");
-        const baseName = nameFmt.replace(/\{index\}/g, stt).replace(/\{title\}/g, safeTitle).replace(/[\\/:*?"<>|]/g, "_");
-        const safeName = `${prefix}${baseName}.${format}`;
-
-        let blob;
-        if (format === 'txt') {
-          const txtContent = `${result.chapter_title || "Chapter"}\n\n${result.content || ""}`;
-          blob = new Blob([txtContent], { type: 'text/plain;charset=utf-8' });
-        } else if (format === 'epub') {
-          const epubBuffer = await buildEpubBuffer(result);
-          blob = new Blob([epubBuffer], { type: 'application/epub+zip' });
-        } else {
-          const docBuffer = await buildDocxBuffer(result);
-          blob = new Blob([docBuffer], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
-        }
-        const reader = new FileReader();
-        const dataUrl = await new Promise((resolve) => {
-          reader.onloadend = () => resolve(reader.result);
-          reader.readAsDataURL(blob);
-        });
-
-        const baseFolder = c.folderName || "Excerpo";
-        const bookSubFolder = (c.bookName || "Truyen").replace(/[\\/:*?"<>|]/g, "_");
-        const action = c.conflictAction || 'uniquify';
-
-        await chrome.downloads.download({
-          url: dataUrl,
-          filename: `${baseFolder}/${bookSubFolder}/${safeName}`,
-          conflictAction: action,
-          saveAs: false
-        });
-
-        // Xử lý mở quảng cáo sau mỗi 3 chương thành công
-        // Automatic ad trigger removed. Ads will be shown via user request.
-        console.log(`[Worker ${workerId}] Đã tải xong: ${chapterDisplayTitle}`);
       } catch (err) {
-        console.error(`[Worker ${workerId}] Lỗi tải chương:`, err);
+        task.errors[i] = `${c.chapter_title}: ${err.message}`;
+        console.error(`[Worker ${workerId}]`, task.errors[i]);
       }
-
-      activeBatchTask.doneCount++;
-      const cBook = activeBatchTask.chapters[i];
-      if (cBook) {
-        const qUpdate = activeBatchTask.queue.find(q => q.bookUrl === cBook.bookUrl);
-        if (qUpdate && qUpdate.status !== 'cancelled') {
-          qUpdate.done++;
-          if (qUpdate.done >= qUpdate.total) {
-            qUpdate.status = 'completed';
-            const completedBookUrl = cBook.bookUrl;
-            setTimeout(() => {
-              if (activeBatchTask && activeBatchTask.queue) {
-                activeBatchTask.queue = activeBatchTask.queue.filter(q => q.bookUrl !== completedBookUrl);
-                saveTaskToStorage();
-                chrome.runtime.sendMessage({ type: 'TASK_PROGRESS', data: activeBatchTask }).catch(() => { });
-              }
-            }, 3000);
-          }
-        }
-      }
-
-      activeBatchTask.activeChapters[workerId] = null;
-      saveTaskToStorage();
-
-      const storage = await chrome.storage.local.get("chapterDelay");
-      const userDelay = (storage.chapterDelay !== undefined ? storage.chapterDelay : 60) * 1000;
-      const delay = Math.max(chapterSource ? (chapterSource.downloadDelay || 500) : 500, userDelay);
-      if (delay > 0) {
-        await keepAliveWait(delay);
+      task.activeChapters[workerId] = null;
+      await saveTaskToStorage(task);
+      notifyTaskProgress();
+      await exportCompletedBook(task, book);
+      if (task.status === 'running' && task.nextIdx < task.chapters.length) {
+        const storage = await chrome.storage.local.get('chapterDelay');
+        const userDelay = (storage.chapterDelay ?? 60) * 1000;
+        await keepAliveWait(Math.max(chapterSource?.downloadDelay || 500, userDelay));
       }
     }
   }
 
-  const storage = await chrome.storage.local.get("chapterDelay");
-  const userDelay = (storage.chapterDelay !== undefined ? storage.chapterDelay : 60) * 1000;
-  const targetWorkerCount = (userDelay > 0) ? 1 : WORKER_COUNT;
-  const numWorkers = Math.max(1, Math.min(targetWorkerCount, activeBatchTask.chapters.length));
-  activeBatchTask.workerCount = numWorkers;
-  activeBatchTask.activeWorkers = numWorkers;
-  const workers = Array.from({ length: numWorkers }, (_, id) => worker(id));
-  await Promise.all(workers);
+  const storage = await chrome.storage.local.get('chapterDelay');
+  const numWorkers = Math.max(1, Math.min((storage.chapterDelay ?? 60) > 0 ? 1 : WORKER_COUNT, task.chapters.length));
+  task.workerCount = numWorkers;
+  task.activeWorkers = numWorkers;
+  do {
+    await Promise.all(Array.from({ length: numWorkers }, (_, id) => worker(id)));
+    // Retry export without fetching chapters again, including after a restart.
+    for (const book of task.queue) await exportCompletedBook(task, book);
+  } while (task.status === 'running' && task.nextIdx < task.chapters.length);
 
-  if (activeBatchTask.status === 'running' || activeBatchTask.status === 'stopping') {
-    activeBatchTask.status = activeBatchTask.status === 'stopping' ? 'stopped' : 'completed';
-    activeBatchTask.activeWorkers = 0;
-    activeBatchTask.activeChapters = [];
-
-    saveTaskToStorage();
-    chrome.runtime.sendMessage({ type: 'TASK_PROGRESS', data: activeBatchTask }).catch(() => { });
+  task.activeWorkers = 0;
+  task.activeChapters = [];
+  for (const book of task.queue) {
+    if (!['completed', 'cancelled'].includes(book.status)) {
+      const errors = task.chapters.flatMap((c, i) => c.batchId === book.id && task.errors[i] ? [task.errors[i]] : []);
+      book.status = task.status === 'stopping' ? 'stopped' : 'error';
+      if (errors.length) book.error = errors.join('\n');
+    }
   }
+  task.status = task.status === 'stopping' ? 'stopped'
+    : task.queue.some(q => q.status === 'error') ? 'error' : 'completed';
+  await saveTaskToStorage(task);
+  notifyTaskProgress();
 }
 
 // ─── Fetching logic ───────────────────────────────────────
@@ -611,7 +577,8 @@ async function parseOnTab(tabId, source, chapter, alertMsg) {
     content: (parsedResult.paragraphs || []).join("\n\n"),
     debug: parsedResult.debug || [],
     needOCR: parsedResult.needOCR || false,
-    dataUrls: parsedResult.dataUrls || null
+    dataUrls: parsedResult.dataUrls || null,
+    __rateLimited: !!parsedResult.__rateLimited
   };
 
   if (result && result.needOCR) {
@@ -757,120 +724,26 @@ async function buildDocxBuffer(chapter) {
   return blob.arrayBuffer();
 }
 
-// ─── Epub helper ─────────────────────────────────────────
-async function buildEpubBuffer(chapter) {
-  const zip = new JSZip();
-
-  // 1. mimetype (Must be uncompressed, but writing as string works for most reader apps)
-  zip.file("mimetype", "application/epub+zip");
-
-  // 2. META-INF/container.xml
-  const containerXml = `<?xml version="1.0"?>
-<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
-  <rootfiles>
-    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
-  </rootfiles>
-</container>`;
-  zip.file("META-INF/container.xml", containerXml);
-
-  // 3. OEBPS/content.opf
-  const title = chapter.chapter_title || "Chapter";
-  const opf = `<?xml version="1.0" encoding="UTF-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookID" version="2.0">
-  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
-    <dc:title>${escapeXml(title)}</dc:title>
-    <dc:language>vi</dc:language>
-    <dc:identifier id="BookID">excerpo-${Date.now()}</dc:identifier>
-    <dc:creator opf:role="aut">Unknown</dc:creator>
-  </metadata>
-  <manifest>
-    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
-    <item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/>
-  </manifest>
-  <spine toc="ncx">
-    <itemref idref="chapter"/>
-  </spine>
-</package>`;
-  zip.file("OEBPS/content.opf", opf);
-
-  // 4. OEBPS/toc.ncx
-  const ncx = `<?xml version="1.0" encoding="UTF-8"?>
-<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
-  <head>
-    <meta name="dtb:uid" content="excerpo-${Date.now()}"/>
-    <meta name="dtb:depth" content="1"/>
-    <meta name="dtb:totalPageCount" content="0"/>
-    <meta name="dtb:maxPageNumber" content="0"/>
-  </head>
-  <docTitle>
-    <text>${escapeXml(title)}</text>
-  </docTitle>
-  <navMap>
-    <navPoint id="navPoint-1" playOrder="1">
-      <navLabel>
-        <text>${escapeXml(title)}</text>
-      </navLabel>
-      <content src="chapter.xhtml"/>
-    </navPoint>
-  </navMap>
-</ncx>`;
-  zip.file("OEBPS/toc.ncx", ncx);
-
-  // 5. OEBPS/chapter.xhtml
-  const contentHtml = (chapter.content || "").split("\n\n").map(text => `<p>${escapeXml(text.trim())}</p>`).join("\n");
-  const xhtml = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
-<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="vi">
-<head>
-  <title>${escapeXml(title)}</title>
-</head>
-<body>
-  <h1>${escapeXml(title)}</h1>
-  ${contentHtml}
-</body>
-</html>`;
-  zip.file("OEBPS/chapter.xhtml", xhtml);
-
-  return await zip.generateAsync({ type: "arraybuffer", compression: "DEFLATE" });
-}
-
-function escapeXml(unsafe) {
-  return unsafe.replace(/[<>&'"]/g, function (c) {
-    switch (c) {
-      case '<': return '&lt;';
-      case '>': return '&gt;';
-      case '&': return '&amp;';
-      case '\'': return '&apos;';
-      case '"': return '&quot;';
-      default: return c;
-    }
-  });
-}
-
 // ─── Restore task on startup ──────────────────────────────
-chrome.storage.local.get("activeBatchTask", async (res) => {
-  if (res.activeBatchTask && res.activeBatchTask.status === 'running') {
-    activeBatchTask = res.activeBatchTask;
-    activeBatchTask.activeChapters = [];
-    activeBatchTask.activeWorkers = 0;
-
-    // Nếu service worker bị kill đúng lúc đang chờ rate-limit,
-    // tính thời gian còn lại và tiếp tục chờ, sau đó retry đúng chương đó
-    if (activeBatchTask.rateLimitRetry) {
-      const remaining = activeBatchTask.rateLimitRetry.until - Date.now();
-      // Đưa nextIdx về chương đang bị rate-limit để retry
-      activeBatchTask.nextIdx = activeBatchTask.rateLimitRetry.chapterIdx;
-      activeBatchTask.rateLimitRetry = null;
-      saveTaskToStorage();
-
-      if (remaining > 0) {
-        console.log(`[Restore] Tiếp tục chờ rate-limit: còn ${Math.ceil(remaining / 1000)}s`);
-        // Dùng keepAliveWait để tránh bị suspend ngay sau khi restore
-        await keepAliveWait(remaining);
-      }
+chrome.storage.local.get('activeBatchTask').then(async res => {
+  const task = res.activeBatchTask;
+  if (task?.version === 2) {
+    activeBatchTask = task;
+    task.results ||= [];
+    task.errors ||= [];
+    task.activeChapters = [];
+    task.activeWorkers = 0;
+    // Revisit assigned-but-unfinished chapters; cached results are skipped.
+    task.nextIdx = 0;
+    task.doneCount = task.results.filter(Boolean).length;
+    for (const book of task.queue) {
+      book.done = task.chapters.filter((c, i) => c.batchId === book.id && task.results[i]).length;
+      if (book.status === 'exporting') book.status = 'pending';
     }
-
-    runBatchDownload();
+    if (task.status === 'stopping') task.status = 'stopped';
+    await saveTaskToStorage(task);
   }
+}).catch(err => console.error('[Restore]', err)).finally(() => {
   storageInitResolve();
+  if (activeBatchTask?.status === 'running') startBatchDownload();
 });

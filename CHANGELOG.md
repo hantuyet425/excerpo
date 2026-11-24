@@ -7,6 +7,21 @@ and this project adheres to Semantic Versioning (`MAJOR.FEAT.FIX`).
 
 ---
 
+## [1.28.0] - 2026-11-24
+
+### Added
+- Export each TXT/EPUB selection as one book in chapter-list order, with an EPUB chapter table of contents.
+- Persist successful chapter text and resume stopped/failed selections without fetching successful chapters again.
+- Keep failed selections visible and prevent incomplete or cancelled book exports.
+- Add dependency-free download, retry, recovery and archive tests.
+
+### Changed
+- Default new installations to TXT and explain single-book output in all UI languages.
+- Track successful chapters separately from failed attempts and wait for Chrome to finish saving the file.
+- Keep DOCX downloads per chapter.
+
+---
+
 ## [1.27.0] - 2026-09-03
 
 ### Added
